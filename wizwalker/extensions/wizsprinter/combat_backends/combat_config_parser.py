@@ -107,10 +107,8 @@ def get_sprinty_grammar():
 
 
 class TreeToConfig(Transformer):
-    def spell(self, items, enchant: bool = False):
+    def spell(self, items):
         if type(items[0]) is not str:
-            if enchant:
-                return TemplateSpell(items[0], optional=True)
             return TemplateSpell(items[0])
         else:
             name: str = items[0]
@@ -119,10 +117,10 @@ class TreeToConfig(Transformer):
             return NamedSpell(name, False)
 
     def enchant(self, items):
-        return self.spell(items, enchant=True)
+        return self.spell(items)
 
     def second_enchant(self, items):
-        return self.spell(items, enchant=True)
+        return self.spell(items)
     
     def move_pass(self, items):
         return NamedSpell("pass")

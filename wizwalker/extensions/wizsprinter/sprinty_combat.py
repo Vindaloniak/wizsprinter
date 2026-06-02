@@ -7,7 +7,6 @@ from wizwalker.combat import CombatMember
 from wizwalker.combat.card import CombatCard
 from wizwalker.memory import EffectTarget, SpellEffects, DynamicSpellEffect
 from wizwalker.memory.memory_objects.spell_effect import CompoundSpellEffect, ConditionalSpellEffect, HangingConversionSpellEffect
-from wizwalker.memory.memory_objects.enums import WindowFlags
 
 from .combat_backends.combat_config_parser import TargetType, TargetData, MoveConfig, TemplateSpell \
     , NamedSpell, SpellType, Spell, DrawSpell
@@ -296,7 +295,7 @@ async def is_req_satisfied(effect: DynamicSpellEffect, req: SpellType, template:
             is_satisfied = eff_type is SpellEffects.dispel
 
         case SpellType.type_mod_damage:
-            is_satisfied = eff_type is SpellEffects.modify_card_damage and target is EffectTarget.spell
+            is_satisfied = (eff_type is SpellEffects.modify_card_outgoing_damage or eff_type is SpellEffects.modify_card_damage or eff_type is SpellEffects.modify_card_damage_by_rank) and target is EffectTarget.spell
 
         case SpellType.type_mod_heal:
             is_satisfied = eff_type is SpellEffects.modify_card_outgoing_heal and target is EffectTarget.spell
@@ -584,7 +583,7 @@ class SprintyCombat(CombatHandler):
             return None
         return enemies[n]
 
-    async def try_get_spell(self, spell: Spell, only_enchants=False, only_enchantable: bool = False, castable: bool = True, multi: bool = False) -> Union[CombatCard, str, None, List]:
+    async def try_get_spell(self, spell: Spell, only_enchants=False, only_enchantable: bool = False, castable: bool = True) -> Union[CombatCard, str, None]:
         if isinstance(spell, NamedSpell):
             spell: NamedSpell
             if spell.name in ("pass", "none", "willcast", "discard"):
@@ -613,8 +612,6 @@ class SprintyCombat(CombatHandler):
                 res = [c for c in res if await is_enchantable(c)]
 
             if len(res) > 0:
-                if multi:
-                    return res
                 return res[0]
             return None
         else:
@@ -697,16 +694,11 @@ class SprintyCombat(CombatHandler):
 
         return False
 
-    async def try_execute_config(self, move_config: MoveConfig, willcasted: bool = False) -> bool | Tuple[bool, bool]:
+    async def try_execute_config(self, move_config: MoveConfig) -> bool:
         if type(move_config.move) is list and type(move_config.target) is list:
             success = False
-            willcasted = False
             for m, t in zip(move_config.move, move_config.target):
-                resp = await self.try_execute_config(MoveConfig(m, t), willcasted=willcasted)
-                if type(resp) is tuple:
-                    success, willcasted = resp
-                else:
-                    success = resp
+                success = await self.try_execute_config(MoveConfig(m, t))
             return success
         if type(move_config.move.card) is DrawSpell:
             for i in range(move_config.move.card.draw_amount):
@@ -721,7 +713,6 @@ class SprintyCombat(CombatHandler):
                     while await self.get_num_card_windows() == card_count:
                         await asyncio.sleep(0.1)
                     self.cur_card_count += 1
-                    await asyncio.sleep(self.config.cast_time*2)
 
             return True
         only_enchantable = move_config.move.enchant is not None
@@ -739,20 +730,11 @@ class SprintyCombat(CombatHandler):
             return False
 
         if cur_card == "willcast":
-            if willcasted:
-                return True
             spell_checkbox_windows = await self.client.root_window.get_windows_with_type("SpellCheckBox")
-
-            wnd = ([x for x in spell_checkbox_windows if await x.name() == "PetCard"])[0]
-
-            if await wnd.flags() - WindowFlags.disabled >= 0:
-                return True
-
-            card = CombatCard(self, wnd)
+            card = CombatCard(self, ([x for x in spell_checkbox_windows if await x.name() == "PetCard"])[0])
             if await card.is_castable():
                 await card.cast(target)
                 await asyncio.sleep(self.config.cast_time*2)
-                return (True, True)
             return True
 
         if cur_card == "discard":
@@ -761,12 +743,10 @@ class SprintyCombat(CombatHandler):
                     combat_card = await self.try_get_spell(card, castable=False)
                     if combat_card is not None:
                         await self.disc_on_target(combat_card)
-                        await asyncio.sleep(self.config.cast_time*2)
             else:
                 combat_card = await self.try_get_spell(target, castable=False)
                 if combat_card is not None:
                     await self.disc_on_target(combat_card)
-                    await asyncio.sleep(self.config.cast_time*2)
             #discard_card = await self.try_get_spell(target, castable=False)
             return True
 
@@ -827,38 +807,12 @@ class SprintyCombat(CombatHandler):
                 try:
                     if isinstance(target, Spell):
                         card_count = await self.get_num_card_windows()
-                        target = await self.try_get_spell(target, castable=False, multi=True)
+                        target = await self.try_get_spell(target, castable=False)
                         if target:
-                            if type(target) is list:
-                                for targ in target:
-                                    if await targ.is_enchanted():
-                                        is_enchant = False
-                                        for e in await to_cast.get_spell_effects():
-                                            if await e.effect_target() is EffectTarget.spell:
-                                                is_enchant = True
-                                                break
-                                        if not is_enchant:
-                                            target = targ
-                                            break
-                                    else:
-                                        target = targ
-                                        break
-                                else:
-                                    break
-                            else:
-                                if await target.is_enchanted():
-                                    is_enchant = False
-                                    for e in await to_cast.get_spell_effects():
-                                        if await e.effect_target() is EffectTarget.spell:
-                                            is_enchant = True
-                                            break
-                                    if is_enchant:
-                                        break
                             await to_cast.cast(target, sleep_time=self.config.cast_time*2)
                             while await self.get_num_card_windows() == card_count:
                                 await asyncio.sleep(0.1)
                             self.cur_card_count -= 1
-                            await asyncio.sleep(self.config.cast_time) # give it some time for card list to update
                         break
                     await to_cast.cast(target, sleep_time=self.config.cast_time*2)
                     await asyncio.sleep(self.config.cast_time) # give it some time for card list to update
